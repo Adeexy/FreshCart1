@@ -9,12 +9,12 @@ on:
 
 permissions:
   contents: read
-  id-token: write # Required for secure OIDC/Workload Identity Federation tracking
+  id-token: write
 
 env:
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}
-  GAR_LOCATION: ${{ vars.GAR_LOCATION || 'us-central1' }}
-  REPOSITORY: ${{ vars.GAR_REPOSITORY || 'freshcart-registry' }}
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID != '' && vars.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}
+  GAR_LOCATION: ${{ vars.GAR_LOCATION != '' && vars.GAR_LOCATION || 'us-central1' }}
+  REPOSITORY: ${{ vars.GAR_REPOSITORY != '' && vars.GAR_REPOSITORY || 'freshcart-registry' }}
   IMAGE_NAME: checkout-api
   IMAGE_TAG: ${{ github.sha }}
 
@@ -28,41 +28,45 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Short-lived cloud credential handshake placeholder (gracefully catches if offline)
+      # Short-lived cloud credential handshake placeholder (uses native conditional logic)
       - name: Authenticate to Google Cloud
         id: auth
         continue-on-error: true
         uses: google-github-actions/auth@v2
         with:
           token_format: 'access_token'
-          workload_identity_provider: ${{ vars.WIF_PROVIDER || 'projects/00000000/locations/global/workloadIdentityPools/mock/providers/mock' }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT || 'mock-deployer@://gserviceaccount.com' }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER != '' && vars.WIF_PROVIDER || 'projects/00000000/locations/global/workloadIdentityPools/mock/providers/mock' }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT != '' && vars.WIF_SERVICE_ACCOUNT || 'mock-deployer@://gserviceaccount.com' }}
 
       - name: Log in to Google Artifact Registry
         continue-on-error: true
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.GAR_LOCATION }}-docker.pkg.dev
+          registry: ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token || 'mock_token' }}
 
-           # 3. Build the Docker image locally pointing directly to the checkout-api directory contents
-        - name: Build Docker Image Locally
+      # Compiles the container context adaptively based on where the file resides
+      - name: Build Docker Image Locally
         run: |
-          docker build \
-            -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
-            -f ./checkout-api/Dockerfile \
-            ./checkout-api
-
-
+          if [ -f "./checkout-api/Dockerfile" ]; then
+            echo "Found Dockerfile inside checkout-api folder. Compiling..."
+            docker build -t ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./checkout-api/Dockerfile ./checkout-api
+          elif [ -f "./Dockerfile" ]; then
+            echo "Found Dockerfile inside root folder. Compiling..."
+            docker build -t ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./Dockerfile .
+          else
+            echo "ERROR: Dockerfile missing from workspace!"
+            exit 1
+          fi
 
       # DevSecOps Security Gate: Scans your built local image directly for $0.00 cost
       - name: Scan Image with Trivy for Vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          image-ref: ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: 'table'
-          exit-code: '1' # Fails the run instantly if high/critical software bugs exist
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
@@ -80,7 +84,7 @@ jobs:
     steps:
       - name: Execute Staging Sync
         run: |
-          echo "Targeting Image: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-scan.outputs.image_tag }}"
+          echo "Targeting Image Version: ${{ needs.build-and-scan.outputs.image_tag }}"
           echo "Simulating Cloud Deployment: gcloud run deploy checkout-api-staging..."
           echo "SUCCESS: Staging environment deployment verified."
 
@@ -88,7 +92,7 @@ jobs:
     name: Promote to Production Environment
     needs: [build-and-scan, deploy-staging]
     runs-on: ubuntu-latest
-    environment: production # Halts execution until manual approval is clicked
+    environment: production
     steps:
       - name: Execute Production Promotion
         run: |
