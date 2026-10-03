@@ -46,18 +46,23 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token || 'mock_token' }}
 
-           # 3. Build the Docker image locally pointing directly to the checkout-api directory contents
+      # 3. Build the Docker image locally if a Dockerfile exists
       - name: Build Docker Image Locally
+        if: ${{ hashFiles('checkout-api/Dockerfile', 'Dockerfile') != '' }}
         run: |
-          if [ -d "./checkout-api" ]; then
+          if [ -f "./checkout-api/Dockerfile" ]; then
             docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./checkout-api/Dockerfile ./checkout-api
           else
             docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./Dockerfile .
           fi
 
+      - name: Skip Docker build when Dockerfile is absent
+        if: ${{ hashFiles('checkout-api/Dockerfile', 'Dockerfile') == '' }}
+        run: echo "No Dockerfile found in checkout-api/ or repository root. Skipping image build and scan."
 
       # DevSecOps Security Gate: Scans your built local image directly for $0.00 cost
       - name: Scan Image with Trivy for Vulnerabilities
+        if: ${{ hashFiles('checkout-api/Dockerfile', 'Dockerfile') != '' }}
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
@@ -68,6 +73,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
 
       - name: Push Verified Image to Registry
+        if: ${{ hashFiles('checkout-api/Dockerfile', 'Dockerfile') != '' }}
         run: |
           echo "Vulnerability scan passed completely!"
           echo "Simulated push to Google Artifact Registry for image tag: ${{ env.IMAGE_TAG }}"
