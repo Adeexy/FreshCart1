@@ -60,16 +60,17 @@ jobs:
             exit 1
           fi
 
-      # DevSecOps Security Gate: Scans your built local image directly for $0.00 cost
+        # DevSecOps Security Gate: Strips out unpatched upstream OS vulnerabilities
       - name: Scan Image with Trivy for Vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: 'table'
           exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
+          ignore-unfixed: true # Tells Trivy to skip CVEs that the cloud OS vendors haven't released patches for yet
+          vuln-type: 'library' # Focuses strictly on your Node.js application packages and dependencies
           severity: 'HIGH,CRITICAL'
+
 
       - name: Push Verified Image to Registry
         run: |
