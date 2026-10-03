@@ -1,4 +1,4 @@
-# --- Stage 1: Build the application ---
+# --- Stage 1: Build the application assets ---
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
@@ -6,16 +6,13 @@ RUN npm ci
 COPY . .
 RUN npm run build --if-present
 
-# --- Stage 2: Production-ready runtime environment ---
-FROM node:20-alpine AS runner
+# --- Stage 2: Hardened Production-ready runtime environment ---
+FROM gcr.io/distroless/nodejs20-debian12 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Safely copy application files and database assets from builder
+# Copy all application assets cleanly from the builder layer
 COPY --from=builder /app ./
 
 EXPOSE 3000
-CMD ["node", "src/index.js"]
+CMD ["src/index.js"]
