@@ -47,13 +47,13 @@ jobs:
           password: ${{ steps.auth.outputs.access_token || 'mock_token' }}
 
            # 3. Build the Docker image locally pointing directly to the checkout-api directory contents
-      - name: Build Docker Image Locally
+        - name: Build Docker Image Locally
         run: |
-          if [ -d "./checkout-api" ]; then
-            docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./checkout-api/Dockerfile ./checkout-api
-          else
-            docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./Dockerfile .
-          fi
+          docker build \
+            -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -f ./checkout-api/Dockerfile \
+            ./checkout-api
+
 
 
       # DevSecOps Security Gate: Scans your built local image directly for $0.00 cost
