@@ -2,7 +2,7 @@ name: CD - Build, Scan, and Multi-Environment Deploy
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
       - 'checkout-api/**'
       - '.github/workflows/cd.yml'
@@ -12,91 +12,172 @@ permissions:
   id-token: write
 
 env:
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID != '' && vars.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}
-  GAR_LOCATION: ${{ vars.GAR_LOCATION != '' && vars.GAR_LOCATION || 'us-central1' }}
-  REPOSITORY: ${{ vars.GAR_REPOSITORY != '' && vars.GAR_REPOSITORY || 'freshcart-registry' }}
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+  REPOSITORY: ${{ vars.GAR_REPOSITORY }}
   IMAGE_NAME: checkout-api
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   build-and-scan:
-    name: Build & Scan Docker Image
+    name: Build, Scan & Push Docker Image
     runs-on: ubuntu-latest
+
     outputs:
-      image_tag: ${{ env.IMAGE_TAG }}
+      image_uri: ${{ steps.image.outputs.image_uri }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Short-lived cloud credential handshake placeholder (uses native conditional logic)
       - name: Authenticate to Google Cloud
-        id: auth
-        continue-on-error: true
         uses: google-github-actions/auth@v2
         with:
-          token_format: 'access_token'
-          workload_identity_provider: ${{ vars.WIF_PROVIDER != '' && vars.WIF_PROVIDER || 'projects/00000000/locations/global/workloadIdentityPools/mock/providers/mock' }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT != '' && vars.WIF_SERVICE_ACCOUNT || 'mock-deployer@://gserviceaccount.com' }}
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          token_format: access_token
 
-      - name: Log in to Google Artifact Registry
-        continue-on-error: true
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token || 'mock_token' }}
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
 
-      # Compiles the container context adaptively based on where the file resides
-      - name: Build Docker Image Locally
+      - name: Authenticate Docker to Artifact Registry
         run: |
-          if [ -f "./checkout-api/Dockerfile" ]; then
-            echo "Found Dockerfile inside checkout-api folder. Compiling..."
-            docker build -t ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./checkout-api/Dockerfile ./checkout-api
-          elif [ -f "./Dockerfile" ]; then
-            echo "Found Dockerfile inside root folder. Compiling..."
-            docker build -t ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -f ./Dockerfile .
-          else
-            echo "ERROR: Dockerfile missing from workspace!"
-            exit 1
-          fi
+          gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
 
-        # DevSecOps Security Gate: Strips out unpatched upstream OS vulnerabilities
-      - name: Scan Image with Trivy for Vulnerabilities
+      - name: Define Image URI
+        id: image
+        run: |
+          IMAGE_URI="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t "$IMAGE_URI" \
+            -f ./checkout-api/Dockerfile \
+            ./checkout-api
+
+      - name: Scan Image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.GAR_LOCATION != '' && env.GAR_LOCATION || 'us-central1' }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID != '' && env.GCP_PROJECT_ID || 'freshcart-capstone-prod' }}/${{ env.REPOSITORY != '' && env.REPOSITORY || 'freshcart-registry' }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          format: 'table'
+          image-ref: ${{ env.IMAGE_URI }}
+          format: table
           exit-code: '1'
-          ignore-unfixed: true # Tells Trivy to skip CVEs that the cloud OS vendors haven't released patches for yet
-          vuln-type: 'library' # Focuses strictly on your Node.js application packages and dependencies
-          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
 
-
-      - name: Push Verified Image to Registry
+      - name: Push Verified Image to Artifact Registry
         run: |
-          echo "Vulnerability scan passed completely!"
-          echo "Simulated push to Google Artifact Registry for image tag: ${{ env.IMAGE_TAG }}"
+          echo "Trivy scan passed."
+          docker push "$IMAGE_URI"
 
   deploy-staging:
-    name: Deploy to Staging Environment
+    name: Deploy to Staging VM
     needs: build-and-scan
     runs-on: ubuntu-latest
     environment: staging
+
     steps:
-      - name: Execute Staging Sync
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Update Staging VM Image
+        env:
+          IMAGE_URI: ${{ needs.build-and-scan.outputs.image_uri }}
         run: |
-          echo "Targeting Image Version: ${{ needs.build-and-scan.outputs.image_tag }}"
-          echo "Simulating Cloud Deployment: gcloud run deploy checkout-api-staging..."
-          echo "SUCCESS: Staging environment deployment verified."
+          gcloud compute instances add-metadata staging-checkout-api \
+            --zone=us-central1-a \
+            --project="${GCP_PROJECT_ID}" \
+            --metadata="freshcart-image=${IMAGE_URI}"
+
+      - name: Restart Staging VM
+        run: |
+          gcloud compute instances reset staging-checkout-api \
+            --zone=us-central1-a \
+            --project="${GCP_PROJECT_ID}"
+
+      - name: Verify Staging
+        run: |
+          LB_IP=$(gcloud compute addresses describe staging-checkout-api-ip \
+            --global \
+            --project="${GCP_PROJECT_ID}" \
+            --format="value(address)")
+
+          echo "Staging Load Balancer: http://${LB_IP}"
+
+          for i in {1..30}; do
+            if curl -fsS --max-time 5 "http://${LB_IP}/" >/dev/null; then
+              echo "Staging is healthy."
+              exit 0
+            fi
+
+            echo "Staging not ready yet. Attempt $i/30..."
+            sleep 10
+          done
+
+          echo "Staging failed health verification."
+          exit 1
 
   deploy-production:
-    name: Promote to Production Environment
+    name: Deploy to Production
     needs: [build-and-scan, deploy-staging]
     runs-on: ubuntu-latest
     environment: production
+
     steps:
-      - name: Execute Production Promotion
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Promote Same Image to Production
+        env:
+          IMAGE_URI: ${{ needs.build-and-scan.outputs.image_uri }}
         run: |
-          echo "Promoting the identical image tag validated in staging: ${{ needs.build-and-scan.outputs.image_tag }}"
-          echo "Simulating Cloud Promotion: gcloud run deploy checkout-api-production..."
-          echo "SUCCESS: Production environment deployment is live."
+          echo "Promoting exact image tested in staging:"
+          echo "$IMAGE_URI"
+
+          gcloud compute instances add-metadata production-checkout-api \
+            --zone=us-central1-a \
+            --project="${GCP_PROJECT_ID}" \
+            --metadata="freshcart-image=${IMAGE_URI}"
+
+      - name: Restart Production VM
+        run: |
+          gcloud compute instances reset production-checkout-api \
+            --zone=us-central1-a \
+            --project="${GCP_PROJECT_ID}"
+
+      - name: Verify Production
+        run: |
+          LB_IP=$(gcloud compute addresses describe production-checkout-api-ip \
+            --global \
+            --project="${GCP_PROJECT_ID}" \
+            --format="value(address)")
+
+          echo "Production Load Balancer: http://${LB_IP}"
+
+          for i in {1..30}; do
+            if curl -fsS --max-time 5 "http://${LB_IP}/" >/dev/null; then
+              echo "Production is healthy."
+              exit 0
+            fi
+
+            echo "Production not ready yet. Attempt $i/30..."
+            sleep 10
+          done
+
+          echo "Production failed health verification."
+          exit 1
